@@ -36,7 +36,7 @@ from .structs import Message, Peer, Info
 DEBUG = False
 
 def print_line(*args):
-    if DEBUG and False:
+    if DEBUG:
         print(*args)
 
 class Spore(object):
