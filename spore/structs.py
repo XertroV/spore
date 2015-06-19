@@ -2,7 +2,7 @@ from encodium import Encodium, String, Bytes, Integer
 
 
 class Message(Encodium):
-    method = String.Definition()
+    method = Bytes.Definition()
     payload = Bytes.Definition()
 
 

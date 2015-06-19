@@ -36,7 +36,7 @@ from .structs import Message, Peer, Info
 DEBUG = False
 
 def print_line(*args):
-    if DEBUG:
+    if DEBUG and False:
         print(*args)
 
 class Spore(object):
@@ -75,22 +75,32 @@ class Spore(object):
 
             port = self._spore._address[1] if self._spore._address else None
             info = Info(version=0, nonce=self._spore._nonce, port=port)
-            self.send('spore_info', info)
+            self.send(b'spore_info', info)
 
 
-        def send(self, method, payload=b''):
-            if hasattr(payload, 'to_json'):
-                payload = payload.to_json().encode()
-            message = Message(method=method, payload=payload).to_json()
+        def send(self, method: bytes, payload):
+            if hasattr(payload, 'to_bencode'):
+                payload = payload.to_bencode()
+            message = Message(method=method, payload=payload).to_bencode()
             print_line("Spore.Protocol: writing transport")
-            self._transport.write((message + "\n").encode())
+            self._transport.write((message))
 
         def data_received(self, data):
             # TODO: refactor this out so we can support more than just JSON
             print_line("Spore.Protocol.data_received:", data)
+            print(data)
+
+            message = Message.from_bencode(data)
+            for callback, deserialize in self._spore._on_message_callbacks[message.method]:
+                if deserialize:
+                    callback(self, deserialize(message.payload))
+                else:
+                    callback(self, message.payload)
+            return message
+
             for byte in data:
                 self._buffer.append(byte)
-                if self._buffer[-1] == 10:
+                if self._buffer[-1] == 10:  # new line
                     try:
                         s = self._buffer.decode()
                     except UnicodeDecodeError:
@@ -137,18 +147,18 @@ class Spore(object):
         self._map_address_to_last_nonce = {address: self._nonce}
         self._debug = debug
 
-        @self.on_message('peer', Peer.from_json)
+        @self.on_message(b'peer', Peer.deserialize)
         def receive_peer(from_peer, new_peer):
             # TODO: track which peers know about which peers to reduce traffic by a factor of two.
             # TODO: Do not relay this peer if it's on a network that is unreachable.
             address = (socket.inet_ntoa(new_peer.ip), new_peer.port)
             if address not in self._known_addresses:
-                self.broadcast('peer', new_peer, exclude=from_peer)
+                self.broadcast(b'peer', new_peer, exclude=from_peer)
                 self._known_addresses.append(address)
                 self._try_new_connections.set()
 
 
-        @self.on_message('spore_info', Info.from_json)
+        @self.on_message(b'spore_info', Info.deserialize)
         def info(peer, info):
             print_line("Spore: spore_info received.")
             if info.nonce in self._map_nonce_to_client:
@@ -160,7 +170,7 @@ class Spore(object):
                 if info.port:
                     receive_peer(peer, Peer(ip=socket.inet_aton(peer.address[0]), port=info.port))
                 for address in self._known_addresses:
-                    peer.send('peer', Peer(ip=socket.inet_aton(address[0]), port=address[1]))
+                    peer.send(b'peer', Peer(ip=socket.inet_aton(address[0]), port=address[1]))
                 for callback in self._on_connect_callbacks:
                     callback(peer)
 
@@ -173,17 +183,18 @@ class Spore(object):
         self._on_disconnect_callbacks.append(func)
         return func
 
-    def on_message(self, method, deserialize=None):
+    def on_message(self, method: bytes, deserialize=None):
+        assert type(method) == bytes
         def wrapper(func):
             self._on_message_callbacks[method].append((func, deserialize))
             return func
 
         return wrapper
 
-    def handler(self, method):
+    def handler(self, method: bytes):
         return self.on_message(method)
 
-    def broadcast(self, method, data, exclude=[]):
+    def broadcast(self, method: bytes, data, exclude=[]):
         if hasattr(data, 'serialize'):
             data = data.serialize()
         for protocol in self._protocols:
