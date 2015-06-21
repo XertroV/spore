@@ -44,6 +44,7 @@ class Spore(object):
         def __init__(self, spore):
             self._spore = spore
             self._buffer = bytearray()
+            self._buffer_counter = 0
             self._transport = None
 
             self.nonce = None
@@ -88,9 +89,14 @@ class Spore(object):
         def data_received(self, data):
             # TODO: refactor this out so we can support more than just JSON
             print_line("Spore.Protocol.data_received:", data)
-            print(data)
 
-            message = Message.from_bencode(data)
+            try:
+                message = Message.from_bencode(data)
+            except Exception as e:
+                raise e
+                self._buffer.extend(bytearray(data))
+                return
+
             for callback, deserialize in self._spore._on_message_callbacks[message.method]:
                 if deserialize:
                     callback(self, deserialize(message.payload))
@@ -128,8 +134,8 @@ class Spore(object):
                 if len(self._spore._protocols) == 0:
                     asyncio.Task(self._spore._notify_protocols_empty(), loop=self._spore._loop)
 
-    def __init__(self, seeds=[], address=None, source_ip=None, debug=False):
-        self._loop = None
+    def __init__(self, seeds=[], address=None, source_ip=None, debug=False, loop=None):
+        self._loop = loop
         self._main_thread = None
         self._protocols = []
         self._clients = []
@@ -194,7 +200,9 @@ class Spore(object):
     def handler(self, method: bytes):
         return self.on_message(method)
 
-    def broadcast(self, method: bytes, data, exclude=[]):
+    def broadcast(self, method: bytes, data, exclude=None):
+        if not exclude:
+            exclude = []
         if hasattr(data, 'serialize'):
             data = data.serialize()
         for protocol in self._protocols:
@@ -209,7 +217,7 @@ class Spore(object):
     def run(self):
 
         # First, set the event loop.
-        self._loop = asyncio.new_event_loop()
+        self._loop = asyncio.new_event_loop() if self._loop is None else self._loop
         self._try_new_connections = asyncio.Event(loop=self._loop)
         self._try_new_connections.set()
         self._protocols_empty_cv = asyncio.Condition(loop=self._loop)
@@ -226,11 +234,11 @@ class Spore(object):
         try:
             self._loop.run_until_complete(self._main_task)
         except (asyncio.CancelledError, KeyboardInterrupt):
-            complete = self._loop.run_until_complete(self._clean_up())
+            pass
 
+        self._loop.run_until_complete(self._clean_up())
         self._main_task = None
         self._loop.close()
-        self._loop = None
 
     def shutdown(self):
         if self._main_task is None:
@@ -292,7 +300,7 @@ class Spore(object):
                         #       (perhaps there is a better way to do this logic anyway, on a per-known-address basis?)
                         # TODO: increase misbehaving for that peer.
 
-            self._loop.call_later(0.05 if try_again else 5, self._try_new_connections.set)
+            self._loop.call_later(0.5 if try_again else 5, self._try_new_connections.set)
 
     @asyncio.coroutine
     def _create_server(self):
